@@ -1,0 +1,50 @@
+name: Documentation checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  markdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Markdown lint
+        run: npx --yes markdownlint-cli2@0.20.0 '**/*.md' '#node_modules'
+
+  local-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check local file links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress './**/*.md'
+          fail: true
+
+  external-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check external links (advisory)
+        id: external
+        continue-on-error: true
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --no-progress --exclude "^https?://(127\.0\.0\.1|localhost)(:|/)" --max-retries 2 --timeout 20 './**/*.md'
+          fail: true
+          output: external-links.md
+      - name: Explain advisory result
+        if: always()
+        run: |
+          echo '### External links' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Advisory check: inspect failures; availability and blocking vary by site.' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f external-links.md ]; then cat external-links.md >> "$GITHUB_STEP_SUMMARY"; fi
