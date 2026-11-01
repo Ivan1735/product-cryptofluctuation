@@ -1,0 +1,20 @@
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -442,7 +442,16 @@
+ function renderCoins() {
+   if (!S.order.length) { $('#coinGrid').innerHTML = Array(4).fill('<div class="skeleton h-44"></div>').join(''); return; }
+   const query = ($('#coinSearch').value || '').toLowerCase().trim();
+-  $('#coinGrid').innerHTML = S.order.filter(sym => !query || (sym + ' ' + COIN_META[sym].name).toLowerCase().includes(query)).map(sym => {
++  const matches = S.order.filter(sym => !query || (sym + ' ' + COIN_META[sym].name).toLowerCase().includes(query));
++  if (!matches.length) {
++    $('#coinGrid').innerHTML = `<div class="glass p-6 text-center sm:col-span-2" role="status" aria-live="polite">
++      <div class="font-bold">Нічого не знайдено</div>
++      <p class="muted text-sm mt-1">Змініть або очистіть пошуковий запит.</p>
++    </div>`;
++    S.shake.clear();
++    return;
++  }
++  $('#coinGrid').innerHTML = matches.map(sym => {
+     const c = S.prices[sym], cls = c.signal === 'buy' ? 'card-down' : c.signal === 'sell' ? 'card-up' : '';
+     const h = c.history || [], trend = h.length > 1 ? h[h.length - 1] - h[0] : 0;
+     const icon = c.signal === 'buy' ? '🔻' : c.signal === 'sell' ? '🔺' : '⏸';
