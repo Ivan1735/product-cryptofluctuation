@@ -1,6 +1,6 @@
 # CryptoFluctuation Intelligence Tracker
 
-Навчальний проєкт із дисципліни «Технології створення програмних продуктів» (ТСПП).
+Навчальний проєкт із дисципліни «Технології створення програмних продуктів» (ТСПП); основний результат — комплект документації від ідеї до релізу.
 
 Продукт для початківців, які хочуть розуміти стан крипторинку перед рішенням про покупку.
 Проблема: ціни, графіки та новини розміщені в різних джерелах, а причини сигналів часто незрозумілі.
@@ -47,7 +47,7 @@
 Робочий прототип запускається локально.
 Публічне посилання на демонстрацію наразі не додано.
 Матеріали основних екранів уже додано до [опису прототипу](2-architecture/prototype/README.md).
-Частина порожніх станів і помилок ще потребує підготовки.
+Порожній пошук, порожній RSS і помилку новин додано як P-17–P-19 із контрольованого прогону.
 Код надається в [ZIP без робочої БД](4-quality/CryptoFluctuation_BUG001-004_fixed.zip).
 Для запуску його потрібно завантажити й розпакувати окремо; інструкція
 є в архіві та в [інструкції користувача](5-management/user-guide.md).
@@ -101,7 +101,7 @@
 | Архітектура | [Сценарії](2-architecture/use-cases.md), [Класи](2-architecture/class-diagram.md), [Архітектура](2-architecture/architecture.md), [Модулі](2-architecture/modules.md), [API](2-architecture/api.md), [Інтеграція](2-architecture/integration-plan.md) |
 | ADR | [Локальний моноліт](2-architecture/adr/0001-local-monolith.md), [SQLite](2-architecture/adr/0002-sqlite-storage.md), [Зовнішні дані й кеш](2-architecture/adr/0003-external-data-cache.md) |
 | Прототип | [Скриншоти, дії та обмеження доказів](2-architecture/prototype/README.md) |
-| Дані | [Модель](3-implementation/data-model.md), [Валідація](3-implementation/validation-rules.md) |
+| Дані | [Модель](3-implementation/data-model.md), [Валідація](3-implementation/validation-rules.md), [Git-вправа](3-implementation/git-workflow.md) |
 | Якість | [План](4-quality/test-plan.md), [Тест-кейси](4-quality/test-cases.md), [Звіт](4-quality/test-report.md), [Excel-шаблон](4-quality/test-workbook.md), [Повторна перевірка](4-quality/qa-known-bugs-retest.md), [Рев’ю](4-quality/review-report.md), [BUG-001](4-quality/bugreports/BUG-001-search-empty.md) |
 | Управління | [План роботи](5-management/plan.md), [Ризики](5-management/risks.md), [Випуск](5-management/release-plan.md), [Інструкція користувача](5-management/user-guide.md), [Супровід](5-management/support.md) |
 | Історія | [CHANGELOG](CHANGELOG.md) |
@@ -114,7 +114,7 @@
 - [Excel-шаблон](4-quality/test-workbook.md) має 37 початкових «Не виконано»; [історичний прогін](4-quality/qa-archive-report.md) і повторні прогони відокремлені. Різні копії та одиниці підрахунку не змішуються.
 - Два реальні коментарі команди в PR №1 та рішення за ними внесено до [звіту про рев’ю](4-quality/review-report.md). Повного людського рев’ю нової копії це не підтверджує.
 - Детальний підсумок, залишкові критерії й рішення щодо випуску: [план випуску](5-management/release-plan.md).
-- Погодження викладача, перевірка потреб користувачів, повний потрібний прогін і фінальний v1.0.0 не підтверджені. Проєктні API та модель не видаються за повністю звірену реалізацію.
+- Оригінальний гайд отримано 01.11.2026: новий код не вимагається, обсяги орієнтовні, інтерв’ю та usability — додаткові. Погодження викладача й NFR-04 не заявлені; проєктні API та модель не видаються за повністю звірену реалізацію.
 
 ## Перевірки документації
 
