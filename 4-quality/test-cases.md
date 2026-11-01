@@ -644,3 +644,45 @@ Should- або Could-функцій до обсягу версії.
 - [Трасування вимог](../1-lifecycle/traceability.md)
 - [Матеріали прототипу](../2-architecture/prototype/README.md)
 - [BUG-001](bugreports/BUG-001-search-empty.md)
+
+## 9. Модульні специфікації для контракту API
+
+Рівень: логічні компоненти MarketData / News із підміною зовнішнього адаптера.
+Джерело: [api.md](../2-architecture/api.md), версія контракту 1.0.0.
+Загальна передумова: тестове сховище активів BTC/ETH та решта погоджених 15 активів;
+годинник і зовнішні відповіді фіксовані. Маршрутизатор `/api/v1` ще проєктний.
+Крок для кожного рядка: підготувати вказаний вхід → викликати відповідну операцію
+логічного компонента → порівняти результат із очікуванням. HTTP-код — очікування
+транспортного адаптера при реалізації. Статуси **«Не виконано»** не підмінені unittest ZIP.
+
+| ID / вимога | Операція та окремий вхід / клас | Очікуваний результат | Статус |
+|---|---|---|---|
+| UT-01 / FR-02 | listAssets: BTC, btc, Bitcoin, bitcoin | Для кожного — одна Bitcoin, BTCUSDT | Не виконано |
+| UT-02 / FR-02 | listAssets: порожній рядок; лише пробіли | 15 активів, 200 | Не виконано |
+| UT-03 / FR-02 | listAssets: `zzzz-not-an-asset` | Порожній data, 200, не 404 | Не виконано |
+| UT-04 / FR-02 | listAssets: довжини 99, 100 і 101 символ | 99/100 прийнято; 101 → 400, дані не змінено | Не виконано |
+| UT-05 / FR-05 | getCandles: BTC і кожен із 1h/4h/1d/7d | Правильні symbol/period, джерело й справжні точки fixture | Не виконано |
+| UT-06 / FR-05 | getCandles: відсутній period; `2h` | 400 VALIDATION_ERROR | Не виконано |
+| UT-07 / FR-04 | getCandles: symbol відсутній; symbol XYZ | Відсутній → 400, невідомий → 404 | Не виконано |
+| UT-08 / FR-08 | getCandles: порожні свічки або timeout | 503, вигадані точки не створено | Не виконано |
+| UT-09 / FR-08 | getQuotes: вік 59, 60, 61 с | 59/60 fresh, 61 stale, попередження | Не виконано |
+| UT-10 / FR-08 | getQuotes: відсутній/некоректний timestamp | Не fresh; час не підмінено поточним | Не виконано |
+| UT-11 / FR-06 | listArticles: коректний порожній RSS | 200, data [], state empty | Не виконано |
+| UT-12 / FR-08 | listArticles: timeout без кешу / з кешем | 503 error / 200 degraded із часом останнього успіху | Не виконано |
+| UT-13 / FR-06 | normalizeArticle: publishedAt відсутній | null, дата не вигадана | Не виконано |
+| UT-14 / FR-07 | checkProvenance: HTTPS офіційний домен, HTTP, сторонній hostname | Відповідність лише для HTTPS офіційного hostname; не фактчек | Не виконано |
+| UT-15 / FR-07 | checkProvenance: `https://cointelegraph.com.evil.example/article` | publisherDomainMatches=false, підрядок не підтверджує домен | Не виконано |
+
+## 10. Інтеграційні стики й фактичний прогін
+
+[План інтеграції](../2-architecture/integration-plan.md) містить два sequence-сценарії:
+ринок/графік і новини. Відповідність до наявних тестів:
+
+| Стик | Специфікація | Фактичний доказ / межа |
+|---|---|---|
+| Presentation → MarketData → зовнішній адаптер | TC-06–09, TC-14–15 | controlled-polling, BTC/ETH ranges, stale/error/recovery у повторному звіті; не всі пункти TC |
+| News → RSS → Presentation | TC-10–13, TC-15 | empty/timeout/503/cache/missing date/new tab; повний негативний набір доменів не заявлено |
+| SignalResearch → MarketData → Persistence | TC-16–20 | Окремі unittest ZIP; Should-розширення, не повний системний прогін |
+
+Фактичні журнали, версія копії та результати — у [звіті повторних перевірок](qa-known-bugs-retest.md).
+Нова таблиця UT є специфікацією навчальної роботи за гайдом, а не фіктивним прогоном.
