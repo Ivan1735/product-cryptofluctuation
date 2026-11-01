@@ -1,0 +1,343 @@
+--- a/app.py
++++ b/app.py
+@@ -35,6 +35,7 @@
+ DB_PATH = os.environ.get("CRYPTO_TRACKER_DB", os.path.join(BASE_DIR, "data", "crypto_tracker.db"))
+ 
+ PRICE_REFRESH_SECONDS = 10      # період фонового оновлення цін (вимога: 10 с)
++MARKET_MAX_AGE = 60             # UI: older quotes are stale; research retains its stricter limit
+ NEWS_CACHE_SECONDS = 60         # RSS опитуємо не частіше разу на хвилину
+ NEWS_ITEMS = 10
+ HTTP_TIMEOUT = 6
+@@ -387,7 +388,8 @@
+     return "negative" if score <= -1 else "positive" if score >= 1 else "neutral"
+ 
+ 
+-news_raw = {"ts": 0.0, "items": [], "source": "unavailable", "feeds": []}
++news_raw = {"ts": 0.0, "items": [], "source": "unavailable", "feeds": [],
++            "success_epoch": None, "degraded": True, "cached": False}
+ news_lock = threading.Lock()
+ translation_cache = {}
+ 
+@@ -4642,8 +4644,20 @@
+     with prices_lock:
+         coins = list(prices_state["coins"].values())
+         updated_at, source = prices_state["updated_at"], prices_state["source"]
++    now = time.time()
++    try:
++        received = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
++        if received.tzinfo is None:
++            raise ValueError("Quote time must include timezone")
++        age = now - received.timestamp()
++        valid_time = math.isfinite(age) and age >= -5
++    except (AttributeError, TypeError, ValueError, OverflowError):
++        age, valid_time = None, False
++    stale = not coins or not valid_time or age > MARKET_MAX_AGE
+     return jsonify({"coins": [serialize_coin(c, lang) for c in coins], "updated_at": updated_at,
+-                    "source": source, "lang": lang, "thresholds": {"drop": DROP_THRESHOLD, "rise": RISE_THRESHOLD}})
++                    "source": source, "lang": lang, "age_seconds": max(0, age) if valid_time else None,
++                    "stale": stale, "stale_after_seconds": MARKET_MAX_AGE,
++                    "thresholds": {"drop": DROP_THRESHOLD, "rise": RISE_THRESHOLD}})
+ 
+ 
+ @app.get("/api/coins/<symbol>")
+@@ -6310,6 +6324,12 @@
+     I18N["chat_news_risk"][_language] = RESEARCH_I18N[_language]["sentiment_negative"] + ". " + RESEARCH_I18N[_language]["not_factcheck"]
+     I18N["chat_news_ok"][_language] = RESEARCH_I18N[_language]["sentiment_neutral"] + ". " + RESEARCH_I18N[_language]["not_factcheck"]
+ 
++# Reliability UI strings: Ukrainian/English; other locales use explicit English fallback.
++_RELIABILITY_EN = {'news_empty': 'No publications found. Sources responded successfully.', 'news_load_error': 'News could not be updated. Try refreshing again.', 'news_cached_warning': 'News could not be fully updated. Previously received articles may be out of date.', 'news_last_success': 'Last successful news update:', 'news_loading': 'Loading news…', 'news_not_updated': 'Not updated', 'news_updated': 'News updated', 'quotes_received': 'Quotes received:', 'quotes_time_unknown': 'Acquisition time unknown', 'quotes_stale': 'Stale quotes: these values may no longer be current.', 'quotes_stale_source': 'stale data', 'quotes_offline_cached': 'Quote update failed. Previously received values are shown; they may be out of date.', 'quotes_unavailable': 'Quotes unavailable. Retry is automatic.', 'quotes_demo': 'Demonstration data — simulated values, not current market observations.'}
++_RELIABILITY_UA = {'news_empty': 'Публікацій немає. Джерела успішно відповіли.', 'news_load_error': 'Не вдалося оновити новини. Спробуйте оновити ще раз.', 'news_cached_warning': 'Новини не вдалося повністю оновити. Раніше отримані публікації можуть бути неактуальними.', 'news_last_success': 'Останнє успішне оновлення новин:', 'news_loading': 'Завантаження новин…', 'news_not_updated': 'Не оновлено', 'news_updated': 'Новини оновлено', 'quotes_received': 'Котирування отримано:', 'quotes_time_unknown': 'Час отримання невідомий', 'quotes_stale': 'Застарілі котирування: значення можуть бути неактуальними.', 'quotes_stale_source': 'застарілі дані', 'quotes_offline_cached': 'Не вдалося оновити котирування. Показано раніше отримані значення; вони можуть бути неактуальними.', 'quotes_unavailable': 'Котирування недоступні. Повторна спроба виконується автоматично.', 'quotes_demo': 'Демонстраційні дані — імітація, а не поточні ринкові спостереження.'}
++for _language in LANGS:
++    RESEARCH_I18N[_language].update(_RELIABILITY_UA if _language == "ua" else _RELIABILITY_EN)
++
+ # ───────────────────── Market research assistant: explainable signals ─────────────────────
+ RULE_VERSION = "market-context-v1"
+ SIGNAL_COOLDOWN_SECONDS = 3600
+@@ -6395,6 +6415,8 @@
+         if not safe_news_url(response.url, key):
+             raise ValueError("RSS redirected outside the publisher domain")
+         parsed = feedparser.parse(response.content)
++        if not parsed.get("version") or (parsed.get("bozo") and not parsed.entries):
++            raise ValueError("RSS could not be parsed as a feed")
+         for entry in parsed.entries[:20]:
+             title = html.unescape(entry.get("title", "")).strip()[:600]
+             link = safe_news_url(entry.get("link", ""), key)
+@@ -6417,10 +6439,12 @@
+                           "published_epoch": published_epoch, "fresh": fresh,
+                           "symbols": article_symbols(title), "score": score,
+                           "sentiment": sentiment_label(score), "related_publishers": []})
+-        return items, {"id": key, "name": name, "ok": bool(items), "checked_at": epoch_iso(time.time())}
++        return items, {"id": key, "name": name, "ok": True,
++                       "state": "ok" if items else "empty", "checked_at": epoch_iso(time.time())}
+     except Exception as exc:
+         app.logger.warning("RSS %s: %s", key, exc)
+-        return [], {"id": key, "name": name, "ok": False, "checked_at": epoch_iso(time.time())}
++        return [], {"id": key, "name": name, "ok": False,
++                    "state": "error", "checked_at": epoch_iso(time.time())}
+ 
+ 
+ def fetch_feed_items():
+@@ -6453,8 +6477,17 @@
+     with news_lock:
+         if time.time() - news_raw["ts"] > NEWS_CACHE_SECONDS:
+             items, statuses = fetch_feed_items()
+-            news_raw.update(ts=time.time(), items=items, feeds=statuses,
+-                            source="rss" if items else "unavailable")
++            failed = {f["id"] for f in statuses if not f["ok"]}
++            ids = {i["id"] for i in items}
++            cached = [i for i in news_raw["items"]
++                      if i.get("publisher") in failed and i["id"] not in ids]
++            rows = sorted(items + cached, key=lambda i: i.get("published_epoch") or 0, reverse=True)[:30]
++            now = time.time()
++            any_ok = any(f["ok"] for f in statuses)
++            news_raw.update(ts=now, items=rows, feeds=statuses, degraded=bool(failed), cached=bool(cached),
++                            source="rss" if any_ok else "cached" if rows else "unavailable")
++            if any_ok:
++                news_raw["success_epoch"] = now
+         return list(news_raw["items"]), news_raw["source"], news_raw["ts"]
+ 
+ 
+@@ -6463,18 +6496,27 @@
+     rows = rows[:NEWS_ITEMS]  # bounded optional headline translations; research uses the full raw feed
+     def localize(item):
+         translated = translate(item["title_en"], lang) if lang in MYMEMORY_PAIRS else None
+-        return {**item, "title": translated or item["title_en"], "url": item["link"],
++        published = item.get("published_epoch")
++        fresh = published is not None and -300 <= time.time() - published <= 86400
++        return {**item, "title": translated or item["title_en"], "url": item["link"], "fresh": fresh,
+                 "original": item["title_en"], "translated": bool(translated)}
+     with ThreadPoolExecutor(max_workers=4) as pool:
+         items = list(pool.map(localize, rows))
+     neg = sum(x["sentiment"] == "negative" for x in items)
+     pos = sum(x["sentiment"] == "positive" for x in items)
+     index = (pos - neg) / max(1, len(items))
+-    return {"items": items, "lang": lang, "source": source, "live": bool(items),
++    with news_lock:
++        feeds = list(news_raw.get("feeds", []))
++        degraded = bool(news_raw.get("degraded", any(not f["ok"] for f in feeds)))
++        cached = bool(news_raw.get("cached", False))
++        success = news_raw.get("success_epoch")
++    state = "degraded" if degraded and items else "error" if degraded else "ok" if items else "empty"
++    return {"items": items, "lang": lang, "source": source, "live": not degraded,
+             "negative": neg, "positive": pos, "neutral": len(items) - neg - pos,
+             "sentiment_index": index, "high_risk": index <= NEWS_RISK_INDEX,
+-            "banner": None, "updated_at": epoch_iso(stamp),
+-            "feeds": list(news_raw.get("feeds", [])), "sources": OFFICIAL_SOURCES,
++            "banner": None, "updated_at": epoch_iso(success) if success else None,
++            "last_attempt_at": epoch_iso(stamp), "state": state, "degraded": degraded, "cached": cached,
++            "feeds": feeds, "sources": OFFICIAL_SOURCES,
+             "verification": "publisher-domain-only-not-fact-check"}
+ 
+ 
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -218,6 +218,7 @@
+           </div>
+         </div>
+         <input id="coinSearch" class="field mb-3" type="search" placeholder="Пошук за назвою або символом" aria-label="Пошук за назвою або символом">
++        <p id="marketDataWarning" role="status" data-no-i18n class="text-sm mb-3 hidden"></p>
+         <div id="coinGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
+       </section>
+ 
+@@ -301,7 +302,9 @@
+ const REASON_LABEL = { manual:'Вручну', stop_loss:'Stop-Loss' };
+ 
+ const S = { prices:{}, order:[], portfolio:null, news:null, alertState:{}, shake:new Set(), lastEventId:null,
+-            tab:'market', sound:true, history:[], connected:true, lastTick:Date.now(), newsAt:0, riskShown:false, statsMonth:null };
++            tab:'market', sound:true, history:[], connected:true, lastTick:Date.now(), newsAt:0, riskShown:false, statsMonth:null,
++            pricesUpdatedAt:null, priceAge:null, priceAgeAt:performance.now(), priceMaxAge:60, serverStale:true,
++            newsError:false, newsLoading:false, newsSequence:0 };
+ 
+ const $ = (s, r=document) => r.querySelector(s);
+ const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+@@ -435,12 +438,12 @@
+   $('#bHint').textContent = has ? (t.pnl >= 0 ? 'у плюсі відносно ціни покупки' : 'у мінусі відносно ціни покупки') : 'додайте першу покупку у вкладці «Портфель»';
+   const sp = $('#bSpark'); sp.className = 'w-40 h-10 ' + (has ? tone(t.pnl) : 'muted'); sp.innerHTML = has ? spark(S.history, 160, 40) : '';
+   $('#posCount').textContent = has ? '(' + S.portfolio.positions.length + ')' : '';
+-  $('#bUpdated').textContent = 'Оновлено о ' + fmtTime(new Date());
++  renderQuoteStatus();
+ }
+ 
+ /* ═════════════ Рендер: ринок ═════════════ */
+ function renderCoins() {
+-  if (!S.order.length) { $('#coinGrid').innerHTML = Array(4).fill('<div class="skeleton h-44"></div>').join(''); return; }
++  if (!S.order.length) { $('#coinGrid').innerHTML = S.connected ? Array(4).fill('<div class="skeleton h-44"></div>').join('') : `<p class="glass p-5 sm:col-span-2" role="alert">${esc(N('quotes_unavailable'))}</p>`; return; }
+   const query = ($('#coinSearch').value || '').toLowerCase().trim();
+   const matches = S.order.filter(sym => !query || (sym + ' ' + COIN_META[sym].name).toLowerCase().includes(query));
+   if (!matches.length) {
+@@ -690,7 +693,13 @@
+   S.order = pr.coins.map(c => c.symbol);
+   pr.coins.forEach(c => { if (c.alert && !S.alertState[c.symbol]) fresh.push(c); S.alertState[c.symbol] = c.alert; S.prices[c.symbol] = {...c, recommendation: CHAT_LABELS[language]['rec_'+c.signal]}; });
+   S.source = pr.source;
+-  if (fresh.length) {
++  S.pricesUpdatedAt = pr.updated_at || null;
++  const parsed = Date.parse(S.pricesUpdatedAt || '');
++  S.priceAge = typeof pr.age_seconds === 'number' ? Math.max(0, pr.age_seconds) : Number.isFinite(parsed) ? Math.max(0, (Date.now()-parsed)/1000) : null;
++  S.priceAgeAt = performance.now();
++  S.priceMaxAge = Number.isFinite(pr.stale_after_seconds) && pr.stale_after_seconds > 0 ? pr.stale_after_seconds : 60;
++  S.serverStale = pr.stale === true || !Number.isFinite(parsed) || parsed > Date.now()+5000;
++  if (fresh.length && !quotesAreStale() && S.source !== 'simulation') {
+     SND.alert();
+     fresh.forEach(c => { S.shake.add(c.symbol); toast(`📉 ${c.symbol} різко впала: ${pctS(c.change_1h)} за годину`, 'danger', 8000); });
+   }
+@@ -702,10 +711,24 @@
+     ev.forEach(x => { S.lastEventId = x.id; SND.stop(); toast('🛡 ' + x.message, 'danger', 10000); });
+   } catch (e) {}
+ }
+-function renderStatus() {
+-  $('#liveDot').classList.toggle('off', !S.connected);
+-  $('#srcLabel').textContent = S.connected ? (tr(SOURCE_LABEL[S.source] || '—')) : 'Немає зв’язку з сервером';
+-}
++function fmtReceived(value) {
++  const d = new Date(value || '');
++  return Number.isFinite(d.getTime()) ? d.toLocaleString(locale(), {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}) : N('quotes_time_unknown');
++}
++function quotesAreStale() {
++  return S.serverStale || S.priceAge === null || S.priceAge + (performance.now()-S.priceAgeAt)/1000 > S.priceMaxAge;
++}
++function renderQuoteStatus() {
++  const stale = quotesAreStale(), demo = S.source === 'simulation';
++  $('#liveDot').classList.toggle('off', !S.connected || stale || demo);
++  const sourceName = {binance:'Binance',coingecko:'CoinGecko'}[S.source] || '—';
++  $('#srcLabel').textContent = !S.connected ? tr('Немає зв’язку з сервером') : demo ? tr(SOURCE_LABEL.simulation) : stale ? sourceName+' · '+N('quotes_stale_source') : tr(SOURCE_LABEL[S.source] || '—');
++  $('#bUpdated').textContent = N('quotes_received')+' '+fmtReceived(S.pricesUpdatedAt);
++  const warning = !S.order.length && !S.connected ? N('quotes_unavailable') : !S.connected ? N('quotes_offline_cached') : demo ? N('quotes_demo') : stale && S.order.length ? N('quotes_stale') : '';
++  const el = $('#marketDataWarning'); el.textContent = warning; el.classList.toggle('hidden', !warning);
++}
++function renderStatus() { renderQuoteStatus(); }
++setInterval(() => renderQuoteStatus(), 1000);
+ let ticking = false;
+ async function tick() {
+   if (ticking) return; ticking = true;
+@@ -718,13 +741,25 @@
+     if(S.tab==='analysis')loadChart(true);
+     await checkEvents();
+     if (Date.now() - S.newsAt > 60000) loadNews();
+-  } catch (e) { S.connected = false; renderStatus(); }
++  } catch (e) { S.connected = false; renderStatus(); renderCoins(); }
+   S.lastTick = Date.now(); ticking = false;
+ }
+ async function loadNews(manual = false) {
+-  S.newsAt = Date.now(); const requestedLang = language;
+-  try { const result = await api('/api/news'); if(requestedLang !== language) return; S.news = result; renderNews(); if (manual) toast('Новини оновлено', 'ok', 2000); }
+-  catch (e) { if (manual) toast('Не вдалося оновити новини', 'danger'); }
++  S.newsAt = Date.now(); const requestedLang = language, sequence = ++S.newsSequence;
++  S.newsLoading = true; renderNews();
++  try {
++    const result = await api('/api/news');
++    if(requestedLang !== language || sequence !== S.newsSequence) return;
++    if (!result || !Array.isArray(result.items)) throw new Error('Invalid news response');
++    S.news = result; S.newsError = false;
++    if (manual) toast(N(result.degraded ? 'news_load_error' : 'news_updated'), result.degraded ? 'danger' : 'ok', 2000);
++  } catch (e) {
++    if(requestedLang !== language || sequence !== S.newsSequence) return;
++    S.newsError = true;
++    if (manual) toast(N('news_load_error'), 'danger');
++  } finally {
++    if(sequence === S.newsSequence) { S.newsLoading = false; renderNews(); }
++  }
+ }
+ $('#newsRefresh').onclick = () => { SND.click(); loadNews(true); };
+ 
+@@ -970,11 +1005,20 @@
+   if(S.tab==='analysis'){if(priceChart){priceChart.destroy();priceChart=null;}mountAnalysis();renderPriceChart();}
+ }
+ function renderNews(){
+-  const n=S.news;if(!n)return;
+-  $('#newsSub').textContent=N('publisher_check_note');$('#riskBanner').classList.add('hidden');
+-  const feeds=(n.feeds || []).map(f=>`<span class="chip ${f.ok?'chip-pos':'chip-neu'}">${esc(f.name)} · ${esc(N(f.ok?'available':'unavailable'))}</span>`).join(' ');
+-  $('#newsBox').setAttribute('data-no-i18n','');
+-  $('#newsBox').innerHTML=`<div class="flex gap-2 flex-wrap mb-3">${feeds}</div><p class="text-xs muted mb-3">${esc(N('not_factcheck'))}</p>${!n.items.length?`<p class="muted text-sm">${esc(N('rss_missing'))}</p>`:`<div class="max-h-[36rem] overflow-y-auto pr-1">${n.items.map(i=>`<article class="news-item"><a href="${esc(i.url)}" target="_blank" rel="noopener noreferrer" class="text-sm font-semibold hover:underline">${esc(i.title)}</a><div class="text-xs muted mt-2">${esc(i.source)} · ${esc(i.domain)}<br>${i.published?fmtDate(i.published):esc(N('time_unknown'))}</div><div class="flex gap-1 flex-wrap mt-2"><span class="chip chip-pos">${esc(N('domain_checked'))}</span><span class="chip ${i.fresh?'chip-neu':'chip-neg'}">${esc(N(i.fresh?'fresh_article':'old_article'))}</span><span class="chip ${i.sentiment==='negative'?'chip-neg':i.sentiment==='positive'?'chip-pos':'chip-neu'}">${esc(N('sentiment_'+i.sentiment))}</span></div>${i.related_publishers?.length?`<p class="text-xs muted mt-2">${esc(N('similar_titles'))}: ${esc(i.related_publishers.join(', '))}. ${esc(N('not_independent_proof'))}</p>`:''}${i.translated?`<details class="text-xs muted mt-2"><summary class="cursor-pointer">${esc(N('original_title'))}</summary><p class="mt-1">${esc(i.original)}</p></details>`:''}</article>`).join('')}</div>`}<details class="mt-3"><summary class="text-xs muted cursor-pointer">${esc(N('source_links'))}</summary><div class="flex flex-wrap gap-2 mt-2">${(n.sources||[]).map(s=>`<a class="text-xs hover:underline" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name)}${s.rss?' · RSS':''}</a>`).join('')}</div><p class="text-xs muted mt-2">${esc(N('source_links_note'))}</p></details>`;
++  const n=S.news;
++  $('#newsSub').textContent=N('publisher_check_note'); $('#riskBanner').classList.add('hidden');
++  const box=$('#newsBox'); box.setAttribute('data-no-i18n','');
++  if(!n){
++    box.innerHTML = `<p id="newsUpdateState" role="${S.newsError?'alert':'status'}" class="text-sm muted">${esc(N(S.newsError?'news_load_error':'news_loading'))}</p>`;
++    return;
++  }
++  const degraded=S.newsError || n.degraded || (n.feeds||[]).some(f=>!f.ok);
++  const warning=degraded ? N(n.items.length?'news_cached_warning':'news_load_error') : '';
++  const state=`<p id="newsUpdateState" role="${warning?'alert':'status'}" class="text-sm mb-3 ${warning?'down':'muted'}">${esc(warning || (S.newsLoading?N('news_loading'):''))}</p>`;
++  const feeds=(n.feeds||[]).map(f=>`<span class="chip ${f.ok&&!S.newsError?'chip-pos':'chip-neu'}">${esc(f.name)} · ${esc(N(S.newsError?'news_not_updated':f.ok?'available':'unavailable'))}</span>`).join(' ');
++  const updated=n.updated_at?`<p id="newsUpdatedAt" class="text-xs muted mb-3">${esc(N('news_last_success'))} ${esc(fmtReceived(n.updated_at))}</p>`:'';
++  const articles=!n.items.length?`<p class="muted text-sm">${esc(N(degraded?'rss_missing':'news_empty'))}</p>`:`<div class="max-h-[36rem] overflow-y-auto pr-1">${n.items.map(i=>`<article class="news-item"><a href="${esc(i.url)}" target="_blank" rel="noopener noreferrer" class="text-sm font-semibold hover:underline">${esc(i.title)}</a><div class="text-xs muted mt-2">${esc(i.source)} · ${esc(i.domain)}<br>${i.published?fmtDate(i.published):esc(N('time_unknown'))}</div><div class="flex gap-1 flex-wrap mt-2"><span class="chip chip-pos">${esc(N('domain_checked'))}</span><span class="chip ${i.fresh?'chip-neu':'chip-neg'}">${esc(N(i.fresh?'fresh_article':'old_article'))}</span><span class="chip ${i.sentiment==='negative'?'chip-neg':i.sentiment==='positive'?'chip-pos':'chip-neu'}">${esc(N('sentiment_'+i.sentiment))}</span></div>${i.related_publishers?.length?`<p class="text-xs muted mt-2">${esc(N('similar_titles'))}: ${esc(i.related_publishers.join(', '))}. ${esc(N('not_independent_proof'))}</p>`:''}${i.translated?`<details class="text-xs muted mt-2"><summary class="cursor-pointer">${esc(N('original_title'))}</summary><p class="mt-1">${esc(i.original)}</p></details>`:''}</article>`).join('')}</div>`;
++  box.innerHTML=state+`<div class="flex gap-2 flex-wrap mb-3">${feeds}</div>`+updated+`<p class="text-xs muted mb-3">${esc(N('not_factcheck'))}</p>`+articles+`<details class="mt-3"><summary class="text-xs muted cursor-pointer">${esc(N('source_links'))}</summary><div class="flex flex-wrap gap-2 mt-2">${(n.sources||[]).map(s=>`<a class="text-xs hover:underline" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name)}${s.rss?' · RSS':''}</a>`).join('')}</div><p class="text-xs muted mt-2">${esc(N('source_links_note'))}</p></details>`;
+ }
+ document.addEventListener('click',e=>{
+   if(e.target.closest('[data-go-signals]')){setTab('signals');loadResearch();loadJournal(false);}
+--- /dev/null
++++ b/tests/test_reliability.py
+@@ -0,0 +1,73 @@
++"""Controlled regression for BUG-002..004; no user's database or external requests."""
++import os,sys,tempfile,unittest,time
++from pathlib import Path
++from unittest.mock import patch
++ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
++TMP=tempfile.TemporaryDirectory(prefix='reliability-tests-');os.environ['CRYPTO_TRACKER_DB']=TMP.name+'/test.db'
++import app as m
++class Response:
++ def __init__(self,url,content):self.url,self.content=url,content
++ def raise_for_status(self):pass
++def rss(url,items=True):
++ host=m.urlsplit(url).hostname
++ item=f'<item><title>QA Ethereum headline without date</title><link>https://{host}/news/qa-reliability</link></item>' if items else ''
++ return Response(url,f'<rss version="2.0"><channel><title>QA feed</title><link>https://{host}/</link><description>Controlled fixture</description>{item}</channel></rss>'.encode())
++class ReliabilityTests(unittest.TestCase):
++ def setUp(self):
++  self.assertTrue(Path(m.DB_PATH).is_relative_to(TMP.name));m.init_db();self.c=m.app.test_client()
++  m.news_raw.clear();m.news_raw.update(ts=0,items=[],source='unavailable',feeds=[],success_epoch=None,degraded=True,cached=False)
++  with m.prices_lock:
++   m.prices_state.update(source='binance',updated_at=m.epoch_iso(time.time()),updated_epoch=time.time(),coins={})
++   for sym,meta in m.COINS.items():m.prices_state['coins'][sym]={'symbol':sym,'name':meta['name'],'price':meta['base'],'change_1h':1.,'signal':'neutral','alert':False}
++ def news(self,fn):
++  with patch.object(m.requests,'get',side_effect=fn),patch.object(m,'translate',return_value=None):return self.c.get('/api/news?lang=ua').json
++ def test_01_empty_rss_is_success_not_failure(self):
++  d=self.news(lambda url,**kw:rss(url,False));self.assertEqual(d['state'],'empty');self.assertEqual(d['items'],[]);self.assertEqual(d['source'],'rss');self.assertTrue(all(f['ok'] for f in d['feeds']));self.assertFalse(d['degraded'])
++ def test_02_timeout_without_cache_is_error(self):
++  d=self.news(lambda *a,**k:(_ for _ in ()).throw(m.requests.exceptions.Timeout('controlled')));self.assertEqual(d['state'],'error');self.assertEqual(d['items'],[]);self.assertIsNone(d['updated_at']);self.assertTrue(d['degraded'])
++ def test_03_timeout_preserves_cache_and_last_success(self):
++  first=self.news(lambda url,**kw:rss(url));m.news_raw['ts']-=61
++  second=self.news(lambda *a,**k:(_ for _ in ()).throw(RuntimeError('controlled')))
++  self.assertEqual(len(second['items']),len(first['items']));self.assertEqual(second['state'],'degraded');self.assertTrue(second['cached']);self.assertEqual(second['updated_at'],first['updated_at']);self.assertEqual(second['source'],'cached')
++ def test_04_successful_empty_replaces_previous_items(self):
++  self.news(lambda url,**kw:rss(url));m.news_raw['ts']-=61
++  d=self.news(lambda url,**kw:rss(url,False));self.assertEqual(d['items'],[]);self.assertFalse(d['cached']);self.assertEqual(d['state'],'empty')
++ def test_05_partial_failure_retains_only_failed_publishers_cache(self):
++  self.news(lambda url,**kw:rss(url));m.news_raw['ts']-=61
++  def get(url,**kw):
++   if 'cointelegraph' in url:raise RuntimeError('controlled')
++   return rss(url,False)
++  d=self.news(get);self.assertEqual(len(d['items']),1);self.assertEqual(d['items'][0]['publisher'],'cointelegraph');self.assertTrue(d['degraded']);self.assertTrue(d['cached']);self.assertEqual(sum(f['ok'] for f in d['feeds']),1)
++ def test_06_malformed_response_is_not_empty_success(self):
++  d=self.news(lambda url,**kw:Response(url,b'<html>not RSS</html>'));self.assertEqual(d['state'],'error');self.assertFalse(any(f['ok'] for f in d['feeds']))
++ def test_07_missing_dates_remain_null(self):
++  d=self.news(lambda url,**kw:rss(url));self.assertTrue(d['items']);self.assertTrue(all(x['published'] is None and not x['fresh'] for x in d['items']))
++ def test_08_quote_age_boundary_60_seconds(self):
++  now=1800000000
++  for age,stale in [(0,False),(60,False),(61,True),(86400,True)]:
++   with self.subTest(age=age):
++    m.prices_state['updated_at']=m.epoch_iso(now-age)
++    with patch.object(m.time,'time',return_value=now):d=self.c.get('/api/prices').json
++    self.assertEqual(d['stale'],stale);self.assertEqual(d['age_seconds'],age);self.assertEqual(d['stale_after_seconds'],60);self.assertEqual(d['updated_at'],m.epoch_iso(now-age))
++ def test_09_unknown_or_future_quote_time_is_not_fresh(self):
++  now=1800000000
++  for stamp in [None,'invalid',m.epoch_iso(now+100),'2026-01-01T00:00:00']:
++   m.prices_state['updated_at']=stamp
++   with patch.object(m.time,'time',return_value=now):d=self.c.get('/api/prices').json
++   self.assertTrue(d['stale']);self.assertIsNone(d['age_seconds'])
++ def test_10_demo_and_missing_prices_are_explicit(self):
++  m.prices_state['source']='simulation';d=self.c.get('/api/prices').json;self.assertEqual(d['source'],'simulation');self.assertEqual(len(d['coins']),15)
++  m.prices_state['coins']={};d=self.c.get('/api/prices').json;self.assertEqual(d['coins'],[]);self.assertTrue(d['stale'])
++ def test_11_research_stale_guard_with_fresh_positive_control(self):
++  now=time.time()
++  with m.analysis_lock:m.analysis_state.update(items={},updated_at=now)
++  self.assertTrue(self.c.get('/api/signals').json['live'])
++  m.prices_state['updated_epoch']=now-65
++  d=self.c.get('/api/signals').json;self.assertFalse(d['live']);self.assertTrue(all(x['kind']=='insufficient' for x in d['items']))
++ def test_12_all_locales_have_reliability_keys(self):
++  for lang in m.LANGS:
++   for key in m._RELIABILITY_EN:self.assertTrue(m.RESEARCH_I18N[lang][key])
++if __name__=='__main__':
++ try:
++  with patch.object(m.requests,'get',side_effect=AssertionError('Unexpected external request')):unittest.main(verbosity=2)
++ finally:TMP.cleanup()
