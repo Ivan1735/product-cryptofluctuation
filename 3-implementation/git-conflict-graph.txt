@@ -1,0 +1,18 @@
+*   3a1f01d Merge branch 'main' into docs/course-guide-completion
+|\  
+| * 0fa5ae5 docs: уточнено команду F2 (паралельна гілка Git-вправи)
+* | 6557e4d docs: доповнено за оригінальним гайдом 3-implementation
+* | 8b9b790 docs: доповнено за оригінальним гайдом README та CHANGELOG
+* | 27b165e docs: доповнено за оригінальним гайдом 5-management
+* | 3b06b57 docs: доповнено за оригінальним гайдом 4-quality
+* | ffd84a9 docs: доповнено за оригінальним гайдом 2-architecture/prototype
+* | 80273e7 docs: доповнено за оригінальним гайдом 2-architecture
+* | 676a711 docs: доповнено за оригінальним гайдом 1-lifecycle
+|/  
+*   062b3c1 Merge pull request #5 from Ivan1735/docs/final-status-and-handoff
+|\  
+| * 25f4874 docs: узгоджено фактичні результати 4-quality/bugreports
+| * a8a0ceb docs: узгоджено фактичні результати 5-management
+| * c6ce6db docs: узгоджено фактичні результати 2-architecture/prototype
+| * bce7d07 docs: узгоджено фактичні результати 1-lifecycle
+| * 4667d89 docs: узгоджено фактичні результати 4-quality
